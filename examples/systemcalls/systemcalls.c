@@ -83,7 +83,8 @@ bool do_exec(int count, ...)
 		syslog( LOG_DEBUG, "Child process, executing command \"%s\"", command[0] );
 		if (execv( command[0], command ) == -1) {
 			syslog( LOG_ERR, "Child process, execv error: %s", strerror( errno ) );
-			retval = false;
+			//retval = false;
+			exit( EXIT_FAILURE );
 		} 
 		break;
 	case -1:
