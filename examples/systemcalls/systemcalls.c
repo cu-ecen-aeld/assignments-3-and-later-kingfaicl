@@ -1,4 +1,13 @@
 #include "systemcalls.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <syslog.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -16,7 +25,14 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
+	int retval = system( cmd );
+	switch (retval) {
+		case -1:
+			syslog( LOG_ERR, "Child process could not be created: %s", strerror( errno ) );
+			return false;
+		default:
+			syslog( LOG_DEBUG, "All system calls succeeded; last termination status: %d", retval );
+	}
     return true;
 }
 
@@ -43,11 +59,12 @@ bool do_exec(int count, ...)
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
+	syslog( LOG_DEBUG, "do_exec command %d/%d: %s", i+1, count, command[i] );
     }
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+ //   command[count] = command[count];
 
 /*
  * TODO:
@@ -58,11 +75,43 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
-
+	bool retval = true;
+	pid_t pid = fork();
+	switch (pid) {
+	case 0:
+		/* child process, do exec */
+		syslog( LOG_DEBUG, "Child process, executing command \"%s\"", command[0] );
+		if (execv( command[0], command ) == -1) {
+			syslog( LOG_ERR, "Child process, execv error: %s", strerror( errno ) );
+			retval = false;
+		} 
+		break;
+	case -1:
+		/* fork error */
+		syslog( LOG_ERR, "Error forking child process: %s", strerror( errno ) );
+		retval = false;
+		break;
+	default:	
+		/* parent process, do wait */
+		syslog( LOG_DEBUG, "Parent process (%s), waiting for child process %d to finish", command[0], pid );
+		int wstatus, wretval;
+		wretval = waitpid( pid, &wstatus, 0 );
+		if (wretval == -1) {
+			syslog( LOG_ERR, "Error executing child process: %s", strerror( errno ) );
+			retval = false;
+		} else if (!WIFEXITED( wstatus )) {
+			syslog( LOG_ERR, "Abnormal child termination: %s", strerror( errno ) );
+			retval = false;
+		} else {
+			syslog( LOG_DEBUG, "Parent process returning from child process %d with exit status: %d", pid, WEXITSTATUS( wstatus ) );
+			if (wstatus != 0) retval = false;
+		}
+	}
     va_end(args);
 
-    return true;
+    return retval;
 }
+
 
 /**
 * @param outputfile - The full path to the file to write with command output.
@@ -78,11 +127,12 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
+	syslog( LOG_DEBUG, "do_exec_redirect command %d/%d: %s", i+1, count, command[i] );
     }
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+//    command[count] = command[count];
 
 
 /*
@@ -92,8 +142,47 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
-
+	bool retval = true;
+	int fd = open( outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644 );
+	if (fd < 0) {
+		syslog( LOG_ERR, "Error opening file \"%s\": %s", outputfile, strerror( errno ) );
+		retval = false;	
+	} else {
+	pid_t pid = fork();
+	switch (pid) {
+	case 0:
+		/* child process, do exec */
+		syslog( LOG_DEBUG, "Child process, executing command \"%s\"", command[0] );
+		/* redirect standard input to file */
+		if (dup2( fd, 1 ) < 0) {
+			syslog( LOG_ERR, "Child process, dup2 error: %s", strerror( errno ) );
+			retval = false;
+		} else if (execv( command[0], command ) == -1) {
+			syslog( LOG_ERR, "Child process, execv error: %s", strerror( errno ) );
+			retval = false;
+		} 
+		break;
+	case -1:
+		/* fork error */
+		syslog( LOG_ERR, "Error forking child process: %s", strerror( errno ) );
+		retval = false;
+		break;
+	default:	
+		/* parent process, do wait */
+		syslog( LOG_DEBUG, "Parent process (%s), waiting for child process %d to finish", command[0], pid );
+		int wstatus, wretval;
+		wretval = wait( &wstatus );
+		if (wretval == -1 || !WIFEXITED( wstatus )) {
+			syslog( LOG_ERR, "Error executing child process or abnormal child termination: %s", strerror( errno ) );
+			retval = false;
+		} else {
+			syslog( LOG_DEBUG, "Parent process returning from child process %d with exit status: %d", pid, WEXITSTATUS( wstatus ) );
+			if (wstatus != 0) retval = false;
+		}
+	}
+	close( fd );
+	}
     va_end(args);
 
-    return true;
+    return retval;
 }
