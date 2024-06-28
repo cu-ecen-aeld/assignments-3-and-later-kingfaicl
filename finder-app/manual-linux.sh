@@ -37,6 +37,7 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
 
     # TODO: Add your kernel build steps here
     # config the build
+    sudo apt install libncurses5-dev
     make menuconfig
 
     # config "virt" arm dev board [simulate in QEMU]
