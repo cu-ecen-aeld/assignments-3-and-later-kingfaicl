@@ -12,7 +12,9 @@ BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
 ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
-TOOLCHAIN=/home/cloo/toolchain/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc
+#TOOLCHAIN=/home/cloo/toolchain/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc
+# auto-runner can't find home; use finder_app path instead
+TOOLCHAIN=${FINDER_APP_DIR}/libc
 
 if [ $# -lt 1 ]
 then
