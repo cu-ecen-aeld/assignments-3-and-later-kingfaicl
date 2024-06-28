@@ -37,13 +37,17 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
 
     # TODO: Add your kernel build steps here
     # config the build
+    echo "Installing ncurses"
     sudo apt install libncurses5-dev
+    echo "Making menuconfig"
     make menuconfig
 
     # config "virt" arm dev board [simulate in QEMU]
+    echo "Configuring virt arm dev board"
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
 
     # build kernel image
+    echo "Building kernel image"
     make -j4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
 
     # build kernel modules
