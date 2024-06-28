@@ -37,8 +37,8 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
 
     # TODO: Add your kernel build steps here
     # config the build
-    echo "Installing ncurses"
-    sudo apt install libncurses5-dev
+#    echo "Installing ncurses"
+#    sudo apt install libncurses5-dev
     echo "Making menuconfig"
     make menuconfig
 
