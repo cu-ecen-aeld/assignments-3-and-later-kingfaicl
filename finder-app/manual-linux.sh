@@ -42,6 +42,7 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
 #    echo "Installing ncurses"
 #    sudo apt install libncurses5-dev
     echo "Making menuconfig"
+    # auto-runner can't find ncurses for making menuconfig; skip
     #make menuconfig
 
     # config "virt" arm dev board [simulate in QEMU]
