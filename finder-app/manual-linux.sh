@@ -14,7 +14,9 @@ ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
 #TOOLCHAIN=/home/cloo/toolchain/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc
 # auto-runner can't find home; use finder_app path instead
-TOOLCHAIN=${FINDER_APP_DIR}/libc
+#TOOLCHAIN=${FINDER_APP_DIR}/libc
+# use sysroot from gcc
+TOOLCHAIN=$(${CROSS_COMPILE}gcc -print-sysroot)
 
 if [ $# -lt 1 ]
 then
@@ -57,7 +59,7 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
 #    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
 
     # build devicetree
-#    make ARCH=${ARCH} CROSS-COMPILE=${CROSS-COMPILE} dtbs
+    make ARCH=${ARCH} CROSS-COMPILE=${CROSS-COMPILE} dtbs
     
 fi
 
@@ -104,15 +106,15 @@ ${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox | grep "program interpre
 ${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox | grep "Shared library"
 
 # TODO: Add library dependencies to rootfs
-#cp -fL ${TOOLCHAIN}/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
-#cp -fL ${TOOLCHAIN}/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
-#cp -fL ${TOOLCHAIN}/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
-#cp -fL ${TOOLCHAIN}/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
-cd ${TOOLCHAIN}
-cp -fL lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
-cp -fL lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
-cp -fL lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
-cp -fL lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
+cp -fL ${TOOLCHAIN}/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
+cp -fL ${TOOLCHAIN}/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
+cp -fL ${TOOLCHAIN}/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
+cp -fL ${TOOLCHAIN}/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
+#cd ${TOOLCHAIN}
+#cp -fL lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
+#cp -fL lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
+#cp -fL lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
+#cp -fL lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
 
 # TODO: Make device nodes
 sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
