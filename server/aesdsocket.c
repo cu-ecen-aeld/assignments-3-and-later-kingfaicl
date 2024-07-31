@@ -1,7 +1,7 @@
 /*
  * aesdsocket.c
  *
- * AELD assignment 5
+ * AELD assignment 6
  * Author: Clifford Loo
  */
 #include <stdio.h>
@@ -18,6 +18,10 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <time.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <pthread.h>
 
 #define MYPORT "9000"  // the port users will be connecting to
 #define BACKLOG 10     // how many pending connections queue will hold
@@ -25,8 +29,50 @@
 #define BUFSIZE 4096
 //#define BUFSIZE 100
 #define PACKET_DELIMITER "\n"
+#define STR_LEN 80
 
 bool caught_sigint = false, caught_sigterm = false, caught_sigpipe;
+
+struct thread_data 
+{
+    pthread_t thread_no;
+    pthread_mutex_t *mutex;
+    int out_fd;
+    bool thread_complete_success;
+};
+
+static void thread_timer( union sigval sigval ) 
+{
+    struct thread_data *td = (struct thread_data *) sigval.sival_ptr;
+    time_t now;
+    char timestamp[STR_LEN+1];
+    int len;
+    if (pthread_mutex_lock( td->mutex ) != 0) {
+	syslog( LOG_ERR, "Error %d (%s) locking mutex for timer thread",
+		errno, strerror( errno ) );
+    } else {
+	/* write time to file */
+	now = time( NULL );
+//	strftime( timestamp, STR_LEN+1, "timestamp:%Y.%m.%d.%H:%M:%S\n",
+	/* RFC 2822-compliant date format */
+	strftime( timestamp, STR_LEN+1, "timestamp:%a, %d %b %Y %T %z\n",
+		  localtime( &now ) );
+	len = strlen( timestamp );
+	if (write( td->out_fd, timestamp, len ) < len) {
+	    syslog( LOG_ERR, "write(time) error: %s", strerror( errno ) );
+	}
+	if (pthread_mutex_unlock( td->mutex ) != 0) {
+	    syslog( LOG_ERR, "Error %d (%s) unlocking mutex for timer thread",
+		    errno, strerror( errno ) );
+	}
+    }
+}
+
+void *thread_server( void *thread_param ) 
+{
+    return NULL;
+} 
+
 
 static void signal_handler( int signal_number )
 {
@@ -58,6 +104,11 @@ void *get_in_addr(struct sockaddr *sa)
 int main( int argc, char **argv )
 {
     bool daemon = false;
+    int clock_id = CLOCK_MONOTONIC;
+    timer_t timer_id;
+    struct sigevent sev;
+    pthread_mutex_t mutex;
+    struct thread_data td;
     openlog( NULL, 0, LOG_USER );
 
     if (argc > 1) {
@@ -203,6 +254,38 @@ int main( int argc, char **argv )
 	    return 1;
 	}
 
+	/* one mutex for all threads writing to the same output file */
+	if (pthread_mutex_init( &mutex, NULL )) {
+	    syslog( LOG_ERR, "Error initializing mutex: %d (%s)", errno,
+		    strerror( errno ) );
+	    return 1;
+	}
+	/* set up thread data for the timer thread */
+	td.mutex = &mutex;
+	td.out_fd = fd;
+	td.thread_no = 0;
+	td.thread_complete_success = false;
+
+	/* set up timer thread */
+	memset( &sev, 0, sizeof(struct sigevent) );
+	sev.sigev_notify = SIGEV_THREAD;
+	sev.sigev_value.sival_ptr = &td;
+	sev.sigev_notify_function = thread_timer;
+	if (timer_create( clock_id, &sev, &timer_id) != 0 ) {
+            syslog( LOG_ERR, "Error creating timer: %d (%s)", errno,
+		    strerror(errno) );
+	    return 1;
+        } else {
+	    struct itimerspec itimerspec;
+	    memset( &itimerspec, 0, sizeof(struct itimerspec) );
+	    itimerspec.it_interval.tv_sec = 10;
+	    itimerspec.it_value.tv_nsec = 1; /* arm the timer */
+	    if (timer_settime( timer_id, 0, &itimerspec, NULL ) != 0) {
+		syslog( LOG_ERR, "Error setting timer %d (%s)", errno,
+			strerror(errno) );
+		return 1;
+	    }
+        }
 
 	/* allocate one additional byte to ensure read_buf is NULL-terminated */
 	read_buf = (char *) malloc( BUFSIZE+1 );
@@ -273,7 +356,7 @@ int main( int argc, char **argv )
 //			syslog( LOG_ERR, "fwrite() error: %s",
 //				strerror( errno ) );
 		    if (write( fd, read_buf, BUFSIZE ) < BUFSIZE) {
-			syslog( LOG_ERR, "write() error: %s",
+			syslog( LOG_ERR, "write(partial_pkt) error: %s",
 				strerror( errno ) );
 		    }
 		} else {
@@ -287,7 +370,7 @@ int main( int argc, char **argv )
 //				    strerror( errno ) );
 			if (write( fd, line, packet_size-1 ) != packet_size-1 ||
 			    write( fd, PACKET_DELIMITER, 1 ) != 1) {
-			    syslog( LOG_ERR, "write() error: %s",
+			    syslog( LOG_ERR, "write(pkt) error: %s",
 				    strerror( errno ) );
 			    break; /* to cleanup in case of signal interrupts */
 			}
@@ -359,6 +442,10 @@ int main( int argc, char **argv )
 
 	/* cleanup */
 	free( read_buf );
+	if (timer_delete( timer_id ) != 0) {
+	    syslog( LOG_ERR, "Error deleting timer %d (%s)", errno,
+		    strerror(errno) );
+	}
 //	fclose( file );
 	if (close( fd )) {
 	    syslog( LOG_ERR, "close(fd) error: %d (%s)\n",

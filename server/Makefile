@@ -1,11 +1,12 @@
 #
-# Makefile for assignment 5
+# Makefile for assignment 6
 #
 SRC := aesdsocket.c
 TARGET = aesdsocket 
 OBJS := $(SRC:.c=.o)
 CC := $(CROSS_COMPILE)gcc 
 CFLAGS += -Wall -Werror
+LDFLAGS += -lrt
 
 all: $(TARGET)
 
