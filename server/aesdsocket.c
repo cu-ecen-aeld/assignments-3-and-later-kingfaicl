@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include "queue.h"
 
 #define MYPORT "9000"  // the port users will be connecting to
 #define BACKLOG 10     // how many pending connections queue will hold
@@ -29,47 +30,173 @@
 #define BUFSIZE 4096
 //#define BUFSIZE 100
 #define PACKET_DELIMITER "\n"
-#define STR_LEN 80
+//#define STR_LEN 80
+#define STR_LEN 50
 
-bool caught_sigint = false, caught_sigterm = false, caught_sigpipe;
+bool caught_sigint = false, caught_sigterm = false, caught_sigpipe = false;
 
-struct thread_data 
+struct thread_info 
 {
     pthread_t thread_no;
-    pthread_mutex_t *mutex;
-    int out_fd;
+    pthread_mutex_t *mutex; /* for exclusive write to tmp_fd */
+    char *client_addr;
+    int client_fd, tmp_fd;
     bool thread_complete_success;
 };
 
 static void thread_timer( union sigval sigval ) 
 {
-    struct thread_data *td = (struct thread_data *) sigval.sival_ptr;
+    struct thread_info *tinfo = (struct thread_info *) sigval.sival_ptr;
     time_t now;
     char timestamp[STR_LEN+1];
     int len;
-    if (pthread_mutex_lock( td->mutex ) != 0) {
+
+    now = time( NULL );
+//  strftime( timestamp, STR_LEN+1, "timestamp:%Y.%m.%d.%H:%M:%S\n",
+    /* RFC 2822-compliant date format */
+    strftime( timestamp, STR_LEN+1, "timestamp:%a, %d %b %Y %T %z\n",
+	      localtime( &now ) );
+    len = strlen( timestamp );
+    if (pthread_mutex_lock( tinfo->mutex ) != 0) {
 	syslog( LOG_ERR, "Error %d (%s) locking mutex for timer thread",
 		errno, strerror( errno ) );
     } else {
 	/* write time to file */
-	now = time( NULL );
-//	strftime( timestamp, STR_LEN+1, "timestamp:%Y.%m.%d.%H:%M:%S\n",
-	/* RFC 2822-compliant date format */
-	strftime( timestamp, STR_LEN+1, "timestamp:%a, %d %b %Y %T %z\n",
-		  localtime( &now ) );
-	len = strlen( timestamp );
-	if (write( td->out_fd, timestamp, len ) < len) {
+	if (write( tinfo->tmp_fd, timestamp, len ) < len) {
 	    syslog( LOG_ERR, "write(time) error: %s", strerror( errno ) );
 	}
-	if (pthread_mutex_unlock( td->mutex ) != 0) {
+	if (pthread_mutex_unlock( tinfo->mutex ) != 0) {
 	    syslog( LOG_ERR, "Error %d (%s) unlocking mutex for timer thread",
 		    errno, strerror( errno ) );
 	}
     }
 }
 
-void *thread_server( void *thread_param ) 
+void thread_joiner( void *ptr )
 {
+    struct thread_info *tinfo = (struct thread_info *) ptr;
+    int rc = pthread_join( tinfo->thread_no, NULL );
+    if (rc) {
+	syslog( LOG_ERR, "pthread_join(%lu) failed with %d",
+		tinfo->thread_no, rc );
+    } else {
+	syslog( LOG_DEBUG, "Joined thread %lu", tinfo->thread_no );
+    }
+}
+
+
+void *conn_handler( void *thread_param ) 
+{
+    bool pending_data = true;
+    struct thread_info *args = (struct thread_info *) thread_param;
+    ssize_t bytes_read, packet_size, bytes_sent;
+    char *read_buf, *line;
+
+    syslog( LOG_DEBUG, "Handling connection from %s", args->client_addr );
+
+    /* allocate one additional byte to
+       ensure read_buf is NULL-terminated */
+    read_buf = (char *) malloc( BUFSIZE+1 );
+    if (!read_buf) {
+	syslog( LOG_ERR, "malloc(read_buf) error" );
+	perror( "malloc()" );
+	return thread_param;	/* return something non-NULL to indicate error */
+    }
+
+    /* read from the socket client,
+       each time clearing & NULL-terminating the buffer for strtok() */
+    for (memset( read_buf, 0, BUFSIZE+1 );
+	 ((bytes_read = recv( args->client_fd, (void *) read_buf, BUFSIZE,
+			      MSG_DONTWAIT )) > 0
+//				     0 )) > 0
+//				     MSG_WAITALL )) > 0
+	  || pending_data)
+	     && !caught_sigint && !caught_sigterm && !caught_sigpipe; ) {
+
+	if (bytes_read <= 0) {
+	    /* give the client another chance to send */
+	    syslog( LOG_DEBUG,
+		    "New connection, %ld data, give it another try",
+		    bytes_read );
+	    continue;
+	} else {
+	    pending_data = false;
+	}
+		
+	syslog( LOG_DEBUG, "Received %ld bytes from %s [%s]", bytes_read,
+		args->client_addr, read_buf );
+		
+	line = strtok( read_buf, PACKET_DELIMITER );
+	packet_size = strlen( line ) + 1;
+	if (packet_size > BUFSIZE) {
+	    /* write out partial packet if buffer size exceeded */
+	    syslog( LOG_DEBUG,
+		    "Writing %ld bytes to file \"%s\"",
+		    (long) BUFSIZE, OUTPUTFILE );
+	    if (write( args->tmp_fd, read_buf, BUFSIZE ) < BUFSIZE) {
+		syslog( LOG_ERR, "write(partial_pkt) error: %s",
+			strerror( errno ) );
+	    }
+	} else {
+	    /* write each packet to the output file as a line */
+	    while (line) {
+		syslog( LOG_DEBUG,
+			"Writing %ld bytes to file \"%s\"",
+			packet_size, OUTPUTFILE );
+		if (write( args->tmp_fd, line, packet_size-1 ) != packet_size-1
+		    || write( args->tmp_fd, PACKET_DELIMITER, 1 ) != 1) {
+		    syslog( LOG_ERR, "write(pkt) error: %s",
+			    strerror( errno ) );
+		    break; /* to cleanup in case of signal interrupts */
+		}
+		if (packet_size < bytes_read) {
+		    line = strtok( NULL, PACKET_DELIMITER );
+		    packet_size = strlen( line ) + 1;
+		} else {
+		    /* no more packets; ignore remaining bytes
+		       in the buffer */
+		    line = NULL;
+		}
+	    }
+	}
+    }
+		
+    /* done receiving on this client socket,
+       start sending data back to client before closing socket */
+    syslog( LOG_DEBUG, "Done receiving, rewinding file \"%s\"",
+	    OUTPUTFILE );
+    if (lseek( args->tmp_fd, 0L, 0 ) < 0) {
+	syslog( LOG_ERR, "lseek() error: %s", strerror( errno ) );
+    }
+    for (memset( read_buf, 0, BUFSIZE+1 );
+	 (bytes_read = read( args->tmp_fd, read_buf, BUFSIZE )) > 0
+	     && !caught_sigint && !caught_sigterm && !caught_sigpipe; ) {
+	syslog( LOG_DEBUG, "Read %ld bytes from file \"%s\"",
+		bytes_read, OUTPUTFILE );
+	/* send partial packet if buffer size exceeded */
+	bytes_sent = send( args->client_fd, (void *) read_buf,
+			   bytes_read < BUFSIZE ?
+			   bytes_read : BUFSIZE,
+			   0 );
+//				   MSG_DONTWAIT );
+	if (bytes_sent == -1) {
+	    syslog( LOG_ERR, "send() error: %s", strerror( errno ) );
+	    break; /* to cleanup in case of signal interrupts */
+	} else {
+	    syslog( LOG_DEBUG, "Sent %ld bytes to %s",
+		    bytes_sent, args->client_addr );
+	    args->thread_complete_success = true;
+	}
+    }
+    if (caught_sigpipe) {
+	syslog( LOG_DEBUG, "Caught SIGPIPE" );
+    }
+    if (close( args->client_fd )) {
+	syslog( LOG_ERR, "close(client_fd) error: %d (%s)\n",
+		errno, strerror( errno ) );
+    }
+    syslog( LOG_DEBUG, "Closed connection from %s", args->client_addr );
+    free( read_buf );
     return NULL;
 } 
 
@@ -104,11 +231,10 @@ void *get_in_addr(struct sockaddr *sa)
 int main( int argc, char **argv )
 {
     bool daemon = false;
-    int clock_id = CLOCK_MONOTONIC;
     timer_t timer_id;
     struct sigevent sev;
     pthread_mutex_t mutex;
-    struct thread_data td;
+    struct thread_info tinfo, *new_tinfo;
     openlog( NULL, 0, LOG_USER );
 
     if (argc > 1) {
@@ -143,14 +269,12 @@ int main( int argc, char **argv )
     }
     if (success) {
 	/* set up socket server */
-	int status, sockfd, new_fd;
+	int status, fd, sockfd, new_fd;
 	struct sockaddr_storage their_addr;
 	socklen_t addr_size;
 	char addr_str[INET6_ADDRSTRLEN];
-	ssize_t bytes_read, packet_size, bytes_sent;
- 	char *read_buf, *line;
 	int yes = 1;
-	bool pending_data;
+	queue_node *thread_list = NULL;
 
 	/* load up address structs with getaddrinfo() */
 	struct addrinfo hints;
@@ -235,15 +359,7 @@ int main( int argc, char **argv )
 
 	/* prepare output file */
 	syslog( LOG_DEBUG, "Opening file \"%s\" for write", OUTPUTFILE );
-//	FILE *file = fopen( OUTPUTFILE, "w+" );
-//	if (file == NULL) {
-//	    /* report error and exit */
-//	    syslog( LOG_ERR, "Error opening file \"%s\": %s",
-//		    OUTPUTFILE, strerror( errno ) );
-//	    close( sockfd );
-//	    return 1;	
-//	}
-	int fd = open( OUTPUTFILE, O_RDWR|O_TRUNC|O_CREAT, 0644 );
+	fd = open( OUTPUTFILE, O_RDWR|O_TRUNC|O_CREAT, 0644 );
 	if (fd < 0) {
 	    syslog( LOG_ERR, "Error opening file \"%s\": %s", OUTPUTFILE,
 		    strerror( errno ) );
@@ -261,17 +377,17 @@ int main( int argc, char **argv )
 	    return 1;
 	}
 	/* set up thread data for the timer thread */
-	td.mutex = &mutex;
-	td.out_fd = fd;
-	td.thread_no = 0;
-	td.thread_complete_success = false;
+	tinfo.tmp_fd = fd;
+	tinfo.mutex = &mutex;
+	tinfo.thread_no = 0;
+	tinfo.thread_complete_success = false;
 
 	/* set up timer thread */
 	memset( &sev, 0, sizeof(struct sigevent) );
 	sev.sigev_notify = SIGEV_THREAD;
-	sev.sigev_value.sival_ptr = &td;
+	sev.sigev_value.sival_ptr = &tinfo;
 	sev.sigev_notify_function = thread_timer;
-	if (timer_create( clock_id, &sev, &timer_id) != 0 ) {
+	if (timer_create( CLOCK_MONOTONIC, &sev, &timer_id) != 0 ) {
             syslog( LOG_ERR, "Error creating timer: %d (%s)", errno,
 		    strerror(errno) );
 	    return 1;
@@ -285,24 +401,8 @@ int main( int argc, char **argv )
 			strerror(errno) );
 		return 1;
 	    }
+	    syslog( LOG_DEBUG, "Created and armed timer" );
         }
-
-	/* allocate one additional byte to ensure read_buf is NULL-terminated */
-	read_buf = (char *) malloc( BUFSIZE+1 );
-	if (!read_buf) {
-	    syslog( LOG_ERR, "malloc() error" );
-	    perror( "malloc()" );
-	    if (close( sockfd )) {
-		syslog( LOG_ERR, "close(sockfd) error: %d (%s)\n",
-			errno, strerror( errno ) );
-	    }
-//	    fclose( file );
-	    if (close( fd )) {
-		syslog( LOG_ERR, "close(fd) error: %d (%s)\n",
-			errno, strerror( errno ) );
-	    }
-	    return 1;
-	}
 	
 
 	while (!caught_sigint && !caught_sigterm) {
@@ -316,122 +416,36 @@ int main( int argc, char **argv )
 			errno, strerror( errno ) );
 		break; /* to cleanup in case of signal interrupts */
 	    }
-	    pending_data = true;
 	    inet_ntop( their_addr.ss_family,
 		       get_in_addr( (struct sockaddr *) &their_addr ),
 		       addr_str, sizeof addr_str );
 	    syslog( LOG_DEBUG, "Accepted connection from %s", addr_str );
 
-	    /* read from the socket client,
-	       each time clearing & NULL-terminating the buffer for strtok() */
-	    for (memset( read_buf, 0, BUFSIZE+1 );
-		 ((bytes_read = recv( new_fd, (void *) read_buf, BUFSIZE,
-				     MSG_DONTWAIT )) > 0
-//				     0 )) > 0
-//				     MSG_WAITALL )) > 0
-		  || pending_data)
-		     && !caught_sigint && !caught_sigterm && !caught_sigpipe; ) {
+	    /* set up thread info for the handler thread, add it to a list */
+	    new_tinfo = (struct thread_info *) malloc(
+		sizeof(struct thread_info) );
+	    if (!new_tinfo) {
+		syslog( LOG_ERR, "malloc(new_tinfo) error" );
+		perror( "malloc()" );
+		return 1;
+	    }
+	    queue_insert( (void *) new_tinfo, &thread_list );
+	    new_tinfo->tmp_fd = fd;
+	    new_tinfo->mutex = &mutex;
+	    new_tinfo->thread_no = 0;
+	    new_tinfo->thread_complete_success = false;
+	    new_tinfo->client_addr = addr_str;
+	    new_tinfo->client_fd = new_fd;
 
-		if (bytes_read <= 0) {
-		    /* give the client another chance to send */
-		    syslog( LOG_DEBUG,
-			    "New connection, %ld data, give it another try",
-			    bytes_read );
-		    continue;
-		} else {
-		    pending_data = false;
-		}
-		
-		syslog( LOG_DEBUG, "Received %ld bytes from %s (%s)", bytes_read,
-			addr_str, read_buf );
-		
-		line = strtok( read_buf, PACKET_DELIMITER );
-		packet_size = strlen( line ) + 1;
-		if (packet_size > BUFSIZE) {
-		    /* write out partial packet if buffer size exceeded */
-		    syslog( LOG_DEBUG,
-			    "Writing %ld bytes to file \"%s\"",
-			    (long) BUFSIZE, OUTPUTFILE );
-//		    if (fwrite( read_buf, 1, BUFSIZE, file ) < BUFSIZE) {
-//			syslog( LOG_ERR, "fwrite() error: %s",
-//				strerror( errno ) );
-		    if (write( fd, read_buf, BUFSIZE ) < BUFSIZE) {
-			syslog( LOG_ERR, "write(partial_pkt) error: %s",
-				strerror( errno ) );
-		    }
-		} else {
-		    /* write each packet to the output file as a line */
-		    while (line) {
-			syslog( LOG_DEBUG,
-				"Writing %ld bytes to file \"%s\"",
-				packet_size, OUTPUTFILE );
-//			if (fprintf( file, "%s\n", line ) < 0) {
-//			    syslog( LOG_ERR, "fprintf() error: %s",
-//				    strerror( errno ) );
-			if (write( fd, line, packet_size-1 ) != packet_size-1 ||
-			    write( fd, PACKET_DELIMITER, 1 ) != 1) {
-			    syslog( LOG_ERR, "write(pkt) error: %s",
-				    strerror( errno ) );
-			    break; /* to cleanup in case of signal interrupts */
-			}
-			if (packet_size < bytes_read) {
-			    line = strtok( NULL, PACKET_DELIMITER );
-			    packet_size = strlen( line ) + 1;
-			} else {
-			    /* no more packets; ignore remaining bytes
-			       in the buffer */
-			    line = NULL;
-			}
-		    }
-		}
-//		if (!fflush( file )) {
-//		    syslog( LOG_ERR, "fflush() error: errno %d (%s), ferror %d",
-//			    errno, strerror( errno ), ferror( file ) );
-//		}
+	    /* create thread to handle connection */
+	    pthread_t t;
+	    int rc = pthread_create( &t, NULL, conn_handler, new_tinfo );
+	    if (rc) {
+		syslog( LOG_ERR, "pthread_create() failed with %d\n", rc );
+	    } else {
+		syslog( LOG_DEBUG, "Created thread %lu", t );
+		new_tinfo->thread_no = t;
 	    }
-
-	    if (bytes_read < 0) {
-		syslog( LOG_ERR, "recv() error: %s (%d) (bytes read = %ld)",
-			strerror( errno ), errno, bytes_read );
-		/* to cleanup in case of signal interrupts */
-	    }
-		
-	    /* done receiving on this new_fd,
-	       start sending data back to client before closing new_fd */
-	    syslog( LOG_DEBUG, "Done receiving, rewinding file \"%s\"",
-		    OUTPUTFILE );
-//	    rewind( file );
-	    if (lseek( fd, 0L, 0 ) < 0) {
-		syslog( LOG_ERR, "lseek() error: %s", strerror( errno ) );
-	    }
-	    for (memset( read_buf, 0, BUFSIZE+1 );
-//		 (bytes_read = fread( read_buf, 1, BUFSIZE, file )) > 0
-		 (bytes_read = read( fd, read_buf, BUFSIZE )) > 0
-		     && !caught_sigint && !caught_sigterm && !caught_sigpipe; ) {
-		syslog( LOG_DEBUG, "Read %ld bytes from file \"%s\"",
-			bytes_read, OUTPUTFILE );
-		/* send partial packet if buffer size exceeded */
-		bytes_sent = send( new_fd, (void *) read_buf,
-				   bytes_read < BUFSIZE ?
-				   bytes_read : BUFSIZE,
-				   0 );
-//				   MSG_DONTWAIT );
-		if (bytes_sent == -1) {
-		    syslog( LOG_ERR, "send() error: %s", strerror( errno ) );
-		    break; /* to cleanup in case of signal interrupts */
-		} else {
-		    syslog( LOG_DEBUG, "Sent %ld bytes to %s",
-			    bytes_sent, addr_str );
-		}
-	    }
-	    if (caught_sigpipe) {
-		syslog( LOG_DEBUG, "Caught SIGPIPE" );
-	    }
-	    if (close( new_fd )) {
-		syslog( LOG_ERR, "close(new_fd) error: %d (%s)\n",
-			errno, strerror( errno ) );
-	    }
-	    syslog( LOG_DEBUG, "Closed connection from %s", addr_str );
 	}
 	if (caught_sigint) {
 	    syslog( LOG_DEBUG, "Caught SIGINT, exiting" );
@@ -441,12 +455,12 @@ int main( int argc, char **argv )
 	}
 
 	/* cleanup */
-	free( read_buf );
+	queue_foreach( thread_joiner, thread_list );
+	queue_free( &thread_list );
 	if (timer_delete( timer_id ) != 0) {
 	    syslog( LOG_ERR, "Error deleting timer %d (%s)", errno,
 		    strerror(errno) );
 	}
-//	fclose( file );
 	if (close( fd )) {
 	    syslog( LOG_ERR, "close(fd) error: %d (%s)\n",
 		    errno, strerror( errno ) );
