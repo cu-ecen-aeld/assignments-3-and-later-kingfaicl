@@ -2,11 +2,11 @@
 # Makefile for assignment 6
 #
 SRC := aesdsocket.c queue.c
-TARGET = aesdsocket 
+TARGET ?= aesdsocket 
 OBJS := $(SRC:.c=.o)
-CC := $(CROSS_COMPILE)gcc 
-CFLAGS += -Wall -Werror
-LDFLAGS += -lrt -pthread
+CC ?= $(CROSS_COMPILE)gcc 
+CFLAGS ?= -g -Wall -Werror
+LDFLAGS ?= -lrt -pthread
 
 all: $(TARGET)
 
