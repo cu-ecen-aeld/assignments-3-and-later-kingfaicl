@@ -1,5 +1,5 @@
 #
-# Makefile for assignment 6
+# Makefile for assignment 6 part 2
 #
 SRC := aesdsocket.c queue.c
 TARGET ?= aesdsocket 
