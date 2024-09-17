@@ -17,11 +17,13 @@
 #include <linux/types.h>
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
+#include <linux/slab.h>
 #include "aesdchar.h"
+#include "aesd-circular-buffer.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
-MODULE_AUTHOR("Your Name Here"); /** TODO: fill in your name **/
+MODULE_AUTHOR("Clifford Loo"); /** TODO: fill in your name **/
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
@@ -32,6 +34,10 @@ int aesd_open(struct inode *inode, struct file *filp)
     /**
      * TODO: handle open
      */
+    struct aesd_dev *dev; /* device information */
+
+    dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
+    filp->private_data = dev; /* for other methods */
     return 0;
 }
 
@@ -52,6 +58,30 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     /**
      * TODO: handle read
      */
+    struct aesd_dev *dev = filp->private_data;
+    size_t offset_rtn = 0;
+    struct aesd_buffer_entry *rtnentry =
+	aesd_circular_buffer_find_entry_offset_for_fpos( &dev->buffer,
+							 *f_pos,
+							 &offset_rtn );
+    if (!rtnentry) {
+	retval = -EFAULT;
+	goto out;
+    }
+    PDEBUG("found %zu-byte entry in circular buffer, offset %zu",
+	   rtnentry->size, offset_rtn);
+    if (rtnentry->size < offset_rtn+count) {
+	count = rtnentry->size - offset_rtn;
+	PDEBUG("requested bytes limited by entry size to %zu", count);
+    }
+    if (copy_to_user( buf, rtnentry->buffptr + offset_rtn, count )) {
+	retval = -EFAULT;
+	goto out;
+    }
+    *f_pos += count;
+    retval = count;
+    
+  out:
     return retval;
 }
 
@@ -63,8 +93,25 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     /**
      * TODO: handle write
      */
+    struct aesd_dev *dev = filp->private_data;
+    dev->entry.buffptr = kmalloc( count, GFP_KERNEL );
+    if (!dev->entry.buffptr) goto out;
+    dev->entry.size = count;
+    if (copy_from_user( dev->entry.buffptr, buf, count )) {
+	retval = -EFAULT;
+	goto out;
+    }
+    PDEBUG("created entry with %zu bytes", count);
+    const char *rtnptr = aesd_circular_buffer_add_entry( &dev->buffer,
+							 &dev->entry );
+    PDEBUG("entry added to circular buffer, replacing 0x%x", rtnptr);
+    if (rtnptr) kfree( rtnptr );
+    return count;
+
+  out:
     return retval;
 }
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
@@ -104,7 +151,12 @@ int aesd_init_module(void)
 
     /**
      * TODO: initialize the AESD specific portion of the device
+     * e.g. locking primitives
      */
+
+    aesd_circular_buffer_init(&aesd_device.buffer);
+
+    mutex_init(&aesd_device.lock);
 
     result = aesd_setup_cdev(&aesd_device);
 
@@ -123,7 +175,13 @@ void aesd_cleanup_module(void)
 
     /**
      * TODO: cleanup AESD specific poritions here as necessary
+     * hint: balance with init()
      */
+    struct aesd_buffer_entry *entry;
+    uint8_t index;
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.buffer, index) {
+	if (entry->buffptr) kfree( entry->buffptr );
+    }
 
     unregister_chrdev_region(devno, 1);
 }
@@ -132,3 +190,4 @@ void aesd_cleanup_module(void)
 
 module_init(aesd_init_module);
 module_exit(aesd_cleanup_module);
+
