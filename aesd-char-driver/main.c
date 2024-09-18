@@ -60,6 +60,10 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
      */
     struct aesd_dev *dev = filp->private_data;
     size_t offset_rtn = 0;
+
+    if (mutex_lock_interruptible( &dev->lock ))
+	return -ERESTARTSYS;
+
     struct aesd_buffer_entry *rtnentry =
 	aesd_circular_buffer_find_entry_offset_for_fpos( &dev->buffer,
 							 *f_pos,
@@ -82,6 +86,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     retval = count;
     
   out:
+    mutex_unlock( &dev->lock );
     return retval;
 }
 
@@ -94,6 +99,10 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
      * TODO: handle write
      */
     struct aesd_dev *dev = filp->private_data;
+
+    if (mutex_lock_interruptible( &dev->lock ))
+	return -ERESTARTSYS;
+
     dev->entry.buffptr = kmalloc( count, GFP_KERNEL );
     if (!dev->entry.buffptr) goto out;
     dev->entry.size = count;
@@ -106,9 +115,10 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 							 &dev->entry );
     PDEBUG("entry added to circular buffer, replacing 0x%x", rtnptr);
     if (rtnptr) kfree( rtnptr );
-    return count;
+    retval = count;
 
   out:
+    mutex_unlock( &dev->lock );
     return retval;
 }
 
