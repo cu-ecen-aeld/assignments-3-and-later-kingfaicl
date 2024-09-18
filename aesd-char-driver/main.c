@@ -65,6 +65,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 							 *f_pos,
 							 &offset_rtn );
     if (!rtnentry) {
+	PDEBUG("null entry returned");
 	retval = -EFAULT;
 	goto out;
     }
@@ -140,6 +141,7 @@ int aesd_init_module(void)
 {
     dev_t dev = 0;
     int result;
+    PDEBUG("init_module");
     result = alloc_chrdev_region(&dev, aesd_minor, 1,
             "aesdchar");
     aesd_major = MAJOR(dev);
@@ -171,6 +173,7 @@ void aesd_cleanup_module(void)
 {
     dev_t devno = MKDEV(aesd_major, aesd_minor);
 
+    PDEBUG("cleanup_module");
     cdev_del(&aesd_device.cdev);
 
     /**
