@@ -10,6 +10,7 @@
 
 #ifdef __KERNEL__
 #include <linux/string.h>
+#include <linux/printk.h>
 #else
 #include <string.h>
 #endif
@@ -37,17 +38,21 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(
     */
     uint8_t a = buffer->in_offs, b = buffer->out_offs;
     size_t size;
+    PDEBUG("find_entry for offset %zu, buffer(%u,%u)",char_offset, a, b);
     /* return if empty buffer */
     if ((a == b) && !buffer->full) return NULL;
     /* else go through the size of each entry */
+    PDEBUG("circular buffer not empty",char_offset);
     do {
 	size = buffer->entry[a].size;
 	if (char_offset >= size) {
 	    /* not this entry, subtract char_offset by size and see next */
+	    PDEBUG("entry %u (%zu bytes): no", a, size);
 	    char_offset -= size;
 	    a = (a+1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 	} else {
 	    /* requested offset found at this entry */
+	    PDEBUG("entry %u (%zu bytes): yes", a, size);
 	    *entry_offset_byte_rtn = char_offset;
 	    return &buffer->entry[a];
 	}
@@ -83,6 +88,7 @@ const char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, 
     }
     return oldbuffptr; /* assume buffer has been properly initialized; i.e. NULL if not full */
 }
+
 
 /**
 * Initializes the circular buffer described by @param buffer to an empty struct

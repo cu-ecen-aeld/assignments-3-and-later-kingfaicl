@@ -8,12 +8,18 @@
 #ifndef AESD_CIRCULAR_BUFFER_H
 #define AESD_CIRCULAR_BUFFER_H
 
-#ifdef __KERNEL__
-#include <linux/types.h>
+#define AESD_DEBUG 1  //Remove comment on this line to enable debug
+
+#ifdef AESD_DEBUG
+#  ifdef __KERNEL__
+     /* This one if debugging is on, and kernel space */
+#    define PDEBUG(fmt, args...) printk( KERN_DEBUG "aesdchar: " fmt, ## args)
+#  else
+     /* This one for user space */
+#    define PDEBUG(fmt, args...) fprintf(stderr, fmt, ## args)
+#  endif
 #else
-#include <stddef.h> // size_t
-#include <stdint.h> // uintx_t
-#include <stdbool.h>
+#  define PDEBUG(fmt, args...) /* not debugging: nothing */
 #endif
 
 #define AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED 10
@@ -80,3 +86,4 @@ extern void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer);
 
 
 #endif /* AESD_CIRCULAR_BUFFER_H */
+

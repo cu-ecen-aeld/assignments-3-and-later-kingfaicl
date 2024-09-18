@@ -66,7 +66,6 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 							 &offset_rtn );
     if (!rtnentry) {
 	PDEBUG("null entry returned");
-	retval = -EFAULT;
 	goto out;
     }
     PDEBUG("found %zu-byte entry in circular buffer, offset %zu",
