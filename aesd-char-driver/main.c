@@ -99,22 +99,52 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
      * TODO: handle write
      */
     struct aesd_dev *dev = filp->private_data;
+    const char *prevptr;
+    size_t prevsize;
 
     if (mutex_lock_interruptible( &dev->lock ))
 	return -ERESTARTSYS;
 
-    dev->entry.buffptr = kmalloc( count, GFP_KERNEL );
-    if (!dev->entry.buffptr) goto out;
-    dev->entry.size = count;
-    if (copy_from_user( dev->entry.buffptr, buf, count )) {
-	retval = -EFAULT;
-	goto out;
+    /* check if entry ptr is non-NULL */
+    if (dev->entry.buffptr) {
+	/* append command by replacing the previous with concatenated result */
+	prevptr = dev->entry.buffptr;
+	prevsize = dev->entry.size;
+	dev->entry.buffptr = kmalloc( prevsize+count, GFP_KERNEL );
+	if (!dev->entry.buffptr) goto out;
+	memcpy( dev->entry.buffptr, prevptr, prevsize );
+	PDEBUG("copied previous entry of %zu bytes", prevsize);
+	kfree( prevptr );
+	if (copy_from_user( dev->entry.buffptr+prevsize, buf, count )) {
+	    retval = -EFAULT;
+	    goto out;
+	}
+	PDEBUG("appended previous entry with %zu bytes", count);
+	dev->entry.size += count;
+    } else {
+	/* set entry ptr to the new command */
+	dev->entry.buffptr = kmalloc( count, GFP_KERNEL );
+	if (!dev->entry.buffptr) goto out;
+	if (copy_from_user( dev->entry.buffptr, buf, count )) {
+	    retval = -EFAULT;
+	    goto out;
+	}
+	PDEBUG("created new entry with %zu bytes", count);
+	dev->entry.size = count;
     }
-    PDEBUG("created entry with %zu bytes", count);
-    const char *rtnptr = aesd_circular_buffer_add_entry( &dev->buffer,
-							 &dev->entry );
-    PDEBUG("entry added to circular buffer, replacing 0x%x", rtnptr);
-    kfree( rtnptr );
+    /* check if entry is now \n-terminated */
+    if (dev->entry.buffptr[dev->entry.size-1] == '\n') {
+	/* add to circular buffer and reset entry ptr to NULL */
+	const char *rtnptr = aesd_circular_buffer_add_entry( &dev->buffer,
+							     &dev->entry );
+	dev->entry.buffptr = 0;
+	dev->entry.size = 0;
+	PDEBUG("entry added to circular buffer, replacing 0x%x", rtnptr);
+	kfree( rtnptr ); /* free any storage for the replaced entry */
+    } else {
+	/* leave the entry as is for later appends */
+	PDEBUG("entry pending continuation");
+    }
     retval = count;
 
   out:
