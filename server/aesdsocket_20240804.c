@@ -26,12 +26,7 @@
 
 #define MYPORT "9000"  // the port users will be connecting to
 #define BACKLOG 10     // how many pending connections queue will hold
-#define USE_AESD_CHAR_DEVICE 1
-#ifdef USE_AESD_CHAR_DEVICE
-#define OUTPUTFILE "/dev/aesdchar"
-#else
 #define OUTPUTFILE "/var/tmp/aesdsocketdata"
-#endif
 #define BUFSIZE 4096
 //#define BUFSIZE 100
 #define PACKET_DELIMITER "\n"
@@ -49,7 +44,6 @@ struct thread_info
     bool thread_complete_success;
 };
 
-#ifndef USE_AESD_CHAR_DEVICE
 static void thread_timer( union sigval sigval ) 
 {
     struct thread_info *tinfo = (struct thread_info *) sigval.sival_ptr;
@@ -77,7 +71,6 @@ static void thread_timer( union sigval sigval )
 	}
     }
 }
-#endif
 
 void thread_joiner( void *ptr )
 {
@@ -238,13 +231,10 @@ void *get_in_addr(struct sockaddr *sa)
 int main( int argc, char **argv )
 {
     bool daemon = false;
-#ifndef USE_AESD_CHAR_DEVICE
     timer_t timer_id;
     struct sigevent sev;
-    struct thread_info tinfo;
-#endif
-    struct thread_info *new_tinfo;
     pthread_mutex_t mutex;
+    struct thread_info tinfo, *new_tinfo;
     openlog( NULL, 0, LOG_USER );
 
     if (argc > 1) {
@@ -386,7 +376,6 @@ int main( int argc, char **argv )
 		    strerror( errno ) );
 	    return 1;
 	}
-#ifndef USE_AESD_CHAR_DEVICE
 	/* set up thread data for the timer thread */
 	tinfo.tmp_fd = fd;
 	tinfo.mutex = &mutex;
@@ -414,7 +403,7 @@ int main( int argc, char **argv )
 	    }
 	    syslog( LOG_DEBUG, "Created and armed timer" );
         }
-#endif
+	
 
 	while (!caught_sigint && !caught_sigterm) {
 
@@ -468,20 +457,16 @@ int main( int argc, char **argv )
 	/* cleanup */
 	queue_foreach( thread_joiner, thread_list );
 	queue_free( &thread_list );
-#ifndef USE_AESD_CHAR_DEVICE
 	if (timer_delete( timer_id ) != 0) {
 	    syslog( LOG_ERR, "Error deleting timer %d (%s)", errno,
 		    strerror(errno) );
 	}
-#endif
 	if (close( fd )) {
 	    syslog( LOG_ERR, "close(fd) error: %d (%s)\n",
 		    errno, strerror( errno ) );
 	}
-#ifndef USE_AESD_CHAR_DEVICE
 	syslog( LOG_DEBUG, "Deleting file \"%s\"", OUTPUTFILE );
 	remove( OUTPUTFILE );
-#endif
 	if (close( sockfd )) {
 	    syslog( LOG_ERR, "close(fd) error: %d (%s)\n",
 		    errno, strerror( errno ) );
