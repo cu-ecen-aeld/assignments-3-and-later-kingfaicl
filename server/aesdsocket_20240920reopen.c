@@ -140,20 +140,9 @@ void *conn_handler( void *thread_param )
 	    syslog( LOG_DEBUG,
 		    "Writing %ld bytes to file \"%s\"",
 		    (long) BUFSIZE, OUTPUTFILE );
-	    if (pthread_mutex_lock( args->mutex ) != 0) {
-		syslog( LOG_ERR, "Error %d (%s) locking mutex for thread %lu",
-			errno, strerror( errno ), args->thread_no );
-	    } else {
-		/* write to output file */
-		if (write( args->out_fd, read_buf, BUFSIZE ) < BUFSIZE) {
-		    syslog( LOG_ERR, "write(partial_pkt) error: %s",
-			    strerror( errno ) );
-		}
-		if (pthread_mutex_unlock( args->mutex ) != 0) {
-		    syslog( LOG_ERR,
-			    "Error %d (%s) unlocking mutex for thread %lu",
-			    errno, strerror( errno ), args->thread_no );
-		}
+	    if (write( args->out_fd, read_buf, BUFSIZE ) < BUFSIZE) {
+		syslog( LOG_ERR, "write(partial_pkt) error: %s",
+			strerror( errno ) );
 	    }
 	} else {
 	    /* write each packet to the output file as a line */
@@ -161,24 +150,11 @@ void *conn_handler( void *thread_param )
 		syslog( LOG_DEBUG,
 			"Writing %ld bytes to file \"%s\"",
 			packet_size, OUTPUTFILE );
-		if (pthread_mutex_lock( args->mutex ) != 0) {
-		    syslog( LOG_ERR,
-			    "Error %d (%s) locking mutex for thread %lu",
-			    errno, strerror( errno ), args->thread_no );
-		} else {
-		    /* write to output file */
-		    if (write( args->out_fd, line, packet_size-1 )
-			!= packet_size-1
-			|| write( args->out_fd, PACKET_DELIMITER, 1 ) != 1) {
-			syslog( LOG_ERR, "write(pkt) error: %s",
-				strerror( errno ) );
-			break; /* to cleanup in case of signal interrupts */
-		    }
-		    if (pthread_mutex_unlock( args->mutex ) != 0) {
-			syslog( LOG_ERR,
-				"Error %d (%s) unlocking mutex for thread %lu",
-				errno, strerror( errno ), args->thread_no );
-		    }
+		if (write( args->out_fd, line, packet_size-1 ) != packet_size-1
+		    || write( args->out_fd, PACKET_DELIMITER, 1 ) != 1) {
+		    syslog( LOG_ERR, "write(pkt) error: %s",
+			    strerror( errno ) );
+		    break; /* to cleanup in case of signal interrupts */
 		}
 		if (packet_size < bytes_read) {
 		    line = strtok( NULL, PACKET_DELIMITER );
