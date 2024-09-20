@@ -170,26 +170,11 @@ void *conn_handler( void *thread_param )
 		
     /* done receiving on this client socket,
        start sending data back to client before closing socket */
-#ifndef USE_AESD_CHAR_DEVICE
     syslog( LOG_DEBUG, "Done receiving, rewinding file \"%s\"",
 	    OUTPUTFILE );
     if (lseek( args->out_fd, 0L, 0 ) < 0) {
 	syslog( LOG_ERR, "lseek() error: %s", strerror( errno ) );
     }
-#else
-    /* seek doesn't work on our /dev/aesdchar; close & re-open instead */
-    syslog( LOG_DEBUG, "Done receiving, closing & re-opening file \"%s\"",
-	    OUTPUTFILE );
-    close( args->out_fd );
-    args->out_fd = open( OUTPUTFILE, O_RDWR|O_TRUNC|O_CREAT, 0644 );
-    if (args->out_fd < 0) {
-	syslog( LOG_ERR, "Error re-opening file \"%s\": %s", OUTPUTFILE,
-		strerror( errno ) );
-	return (void *) 1;
-    }
-    syslog( LOG_DEBUG, "Re-opened file \"%s\" for write (%d)", OUTPUTFILE,
-	    args->out_fd );
-#endif
     for (memset( read_buf, 0, BUFSIZE+1 );
 	 (bytes_read = read( args->out_fd, read_buf, BUFSIZE )) > 0
 	     && !caught_sigint && !caught_sigterm && !caught_sigpipe; ) {
@@ -403,7 +388,6 @@ int main( int argc, char **argv )
 	    }
 	    return 1;
 	}
-	syslog( LOG_DEBUG, "Opened file \"%s\" for write (%d)", OUTPUTFILE, fd );
 
 	/* set up thread data for the timer thread */
 	tinfo.out_fd = fd;
