@@ -43,9 +43,9 @@ bool caught_sigint = false, caught_sigterm = false, caught_sigpipe = false;
 struct thread_info 
 {
     pthread_t thread_no;
-    pthread_mutex_t *mutex; /* for exclusive write to out_fd */
+    pthread_mutex_t *mutex; /* for exclusive write to tmp_fd */
     char *client_addr;
-    int client_fd, out_fd;
+    int client_fd, tmp_fd;
     bool thread_complete_success;
 };
 
@@ -68,7 +68,7 @@ static void thread_timer( union sigval sigval )
 		errno, strerror( errno ) );
     } else {
 	/* write time to file */
-	if (write( tinfo->out_fd, timestamp, len ) < len) {
+	if (write( tinfo->tmp_fd, timestamp, len ) < len) {
 	    syslog( LOG_ERR, "write(time) error: %s", strerror( errno ) );
 	}
 	if (pthread_mutex_unlock( tinfo->mutex ) != 0) {
@@ -140,7 +140,7 @@ void *conn_handler( void *thread_param )
 	    syslog( LOG_DEBUG,
 		    "Writing %ld bytes to file \"%s\"",
 		    (long) BUFSIZE, OUTPUTFILE );
-	    if (write( args->out_fd, read_buf, BUFSIZE ) < BUFSIZE) {
+	    if (write( args->tmp_fd, read_buf, BUFSIZE ) < BUFSIZE) {
 		syslog( LOG_ERR, "write(partial_pkt) error: %s",
 			strerror( errno ) );
 	    }
@@ -150,8 +150,8 @@ void *conn_handler( void *thread_param )
 		syslog( LOG_DEBUG,
 			"Writing %ld bytes to file \"%s\"",
 			packet_size, OUTPUTFILE );
-		if (write( args->out_fd, line, packet_size-1 ) != packet_size-1
-		    || write( args->out_fd, PACKET_DELIMITER, 1 ) != 1) {
+		if (write( args->tmp_fd, line, packet_size-1 ) != packet_size-1
+		    || write( args->tmp_fd, PACKET_DELIMITER, 1 ) != 1) {
 		    syslog( LOG_ERR, "write(pkt) error: %s",
 			    strerror( errno ) );
 		    break; /* to cleanup in case of signal interrupts */
@@ -172,11 +172,11 @@ void *conn_handler( void *thread_param )
        start sending data back to client before closing socket */
     syslog( LOG_DEBUG, "Done receiving, rewinding file \"%s\"",
 	    OUTPUTFILE );
-    if (lseek( args->out_fd, 0L, 0 ) < 0) {
+    if (lseek( args->tmp_fd, 0L, 0 ) < 0) {
 	syslog( LOG_ERR, "lseek() error: %s", strerror( errno ) );
     }
     for (memset( read_buf, 0, BUFSIZE+1 );
-	 (bytes_read = read( args->out_fd, read_buf, BUFSIZE )) > 0
+	 (bytes_read = read( args->tmp_fd, read_buf, BUFSIZE )) > 0
 	     && !caught_sigint && !caught_sigterm && !caught_sigpipe; ) {
 	syslog( LOG_DEBUG, "Read %ld bytes from file \"%s\"",
 		bytes_read, OUTPUTFILE );
@@ -279,7 +279,7 @@ int main( int argc, char **argv )
     }
     if (success) {
 	/* set up socket server */
-	int status, fd = -1, sockfd, new_fd;
+	int status, fd, sockfd, new_fd;
 	struct sockaddr_storage their_addr;
 	socklen_t addr_size;
 	char addr_str[INET6_ADDRSTRLEN];
@@ -367,16 +367,7 @@ int main( int argc, char **argv )
 	    return -1;
 	}
 
-	/* one mutex for all threads writing to the same output file */
-	if (pthread_mutex_init( &mutex, NULL )) {
-	    syslog( LOG_ERR, "Error initializing mutex: %d (%s)", errno,
-		    strerror( errno ) );
-	    return 1;
-	}
-
-#ifndef USE_AESD_CHAR_DEVICE
-
-	/* delay opening of output file for aesdchar testing (Assignment 8) */
+	/* prepare output file */
 	syslog( LOG_DEBUG, "Opening file \"%s\" for write", OUTPUTFILE );
 	fd = open( OUTPUTFILE, O_RDWR|O_TRUNC|O_CREAT, 0644 );
 	if (fd < 0) {
@@ -389,8 +380,15 @@ int main( int argc, char **argv )
 	    return 1;
 	}
 
+	/* one mutex for all threads writing to the same output file */
+	if (pthread_mutex_init( &mutex, NULL )) {
+	    syslog( LOG_ERR, "Error initializing mutex: %d (%s)", errno,
+		    strerror( errno ) );
+	    return 1;
+	}
+#ifndef USE_AESD_CHAR_DEVICE
 	/* set up thread data for the timer thread */
-	tinfo.out_fd = fd;
+	tinfo.tmp_fd = fd;
 	tinfo.mutex = &mutex;
 	tinfo.thread_no = 0;
 	tinfo.thread_complete_success = false;
@@ -443,21 +441,7 @@ int main( int argc, char **argv )
 		return 1;
 	    }
 	    queue_insert( (void *) new_tinfo, &thread_list );
-	    if (fd == -1) {
-		/* output file not yet opened; prepare output file */
-		syslog( LOG_DEBUG, "Opening file \"%s\" for write", OUTPUTFILE );
-		fd = open( OUTPUTFILE, O_RDWR|O_TRUNC|O_CREAT, 0644 );
-		if (fd < 0) {
-		    syslog( LOG_ERR, "Error opening file \"%s\": %s", OUTPUTFILE,
-			    strerror( errno ) );
-		    if (close( sockfd )) {
-			syslog( LOG_ERR, "close(sockfd) error: %d (%s)\n",
-				errno, strerror( errno ) );
-		    }
-		    return 1;
-		}
-	    }
-	    new_tinfo->out_fd = fd;
+	    new_tinfo->tmp_fd = fd;
 	    new_tinfo->mutex = &mutex;
 	    new_tinfo->thread_no = 0;
 	    new_tinfo->thread_complete_success = false;
@@ -499,7 +483,7 @@ int main( int argc, char **argv )
 	remove( OUTPUTFILE );
 #endif
 	if (close( sockfd )) {
-	    syslog( LOG_ERR, "close(sockfd) error: %d (%s)\n",
+	    syslog( LOG_ERR, "close(fd) error: %d (%s)\n",
 		    errno, strerror( errno ) );
 	}
 	return 0;
