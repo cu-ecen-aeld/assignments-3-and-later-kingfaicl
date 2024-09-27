@@ -105,7 +105,7 @@ size_t aesd_circular_buffer_size( struct aesd_circular_buffer *buffer )
     */
     uint8_t a = buffer->in_offs, b = buffer->out_offs;
     size_t size = 0;
-    PDEBUG("size for buffer(%u,%u)", a, b);
+    PDEBUG("calculate size of buffer(%u,%u)", a, b);
     /* return 0 if empty buffer */
     if ((a == b) && !buffer->full) return 0;
     /* else go through the size of all entries */
