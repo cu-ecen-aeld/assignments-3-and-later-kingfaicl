@@ -157,10 +157,11 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
 {
     struct aesd_dev *dev = filp->private_data;
-    loff_t newpos = 0;
     PDEBUG("llseek with offset %lld, whence %d", off, whence);
+    size_t size = aesd_circular_buffer_size( &dev->buffer );
+    PDEBUG("buffer size = %lu", size);
     /* use wrapper function fixed_size_llseek(struct file *, loff_t offset, int whence, loff_t size), with locking and logging */
-    return newpos;
+    return fixed_size_llseek( filp, off, whence, size );
 }
 
 static long aesd_adjust_file_offset( struct file *filp,

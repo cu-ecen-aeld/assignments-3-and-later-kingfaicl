@@ -98,3 +98,22 @@ void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer)
     memset(buffer,0,sizeof(struct aesd_circular_buffer));
 }
 
+size_t aesd_circular_buffer_size( struct aesd_circular_buffer *buffer )
+{
+    /**
+    * assume buffer has been properly initialized with valid fields
+    */
+    uint8_t a = buffer->in_offs, b = buffer->out_offs;
+    size_t size = 0;
+    PDEBUG("size for buffer(%u,%u)", a, b);
+    /* return 0 if empty buffer */
+    if ((a == b) && !buffer->full) return 0;
+    /* else go through the size of all entries */
+    PDEBUG("circular buffer not empty");
+    do {
+	size += buffer->entry[b].size;
+	b = (b+1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    } while (a != b);
+    return size;
+}
+
