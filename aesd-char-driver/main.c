@@ -183,7 +183,7 @@ static long aesd_adjust_file_offset( struct file *filp,
 {
     struct aesd_dev *dev = filp->private_data;
     struct aesd_circular_buffer buffer = dev->buffer;
-    uint8_t here = buffer.out_offs, end = buffer.out_offs;
+    uint8_t here = buffer.out_offs, end = buffer.in_offs;
     loff_t start_off = 0;
 
     PDEBUG("adjust file offset to cmd %u offset %u",
