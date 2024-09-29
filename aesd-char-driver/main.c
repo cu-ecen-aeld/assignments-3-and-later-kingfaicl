@@ -191,10 +191,12 @@ static long aesd_adjust_file_offset( struct file *filp,
     /* check for valid cmd offset */
     if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
 	/* out of range */
+	PDEBUG("out of range");
 	return -EINVAL;
     }
     if ((here == end) && !buffer.full) {
 	/* empty buffer */
+	PDEBUG("empty buffer");
 	return -EINVAL;
     }
     do {
@@ -220,6 +222,7 @@ static long aesd_adjust_file_offset( struct file *filp,
 	}
     } while (here != end);
     /* not found */
+    PDEBUG("not found");
     return -EINVAL;
 }
 
