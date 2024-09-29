@@ -186,7 +186,7 @@ static long aesd_adjust_file_offset( struct file *filp,
     uint8_t here = buffer.out_offs, end = buffer.out_offs;
     loff_t start_off = 0;
 
-    PDEBUG("adjust file offset %lld to cmd %u offset %u",
+    PDEBUG("adjust file offset to cmd %u offset %u",
 	   write_cmd, write_cmd_offset);
     /* check for valid cmd offset */
     if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
@@ -200,6 +200,8 @@ static long aesd_adjust_file_offset( struct file *filp,
     do {
 	if (write_cmd == here) {
 	    /* found */
+	    PDEBUG("found entry %u (at offset %u) of size %u",
+		   here, start_off, buffer.entry[here].size);
 	    if (write_cmd_offset >= buffer.entry[here].size) {
 		/* out of range */
 		return -EINVAL;
@@ -212,6 +214,8 @@ static long aesd_adjust_file_offset( struct file *filp,
 	    /* add size to start offset */
 	    start_off += buffer.entry[here].size;
 	    /* next */
+	    PDEBUG("entry %u: adding size %u to offset",
+		   here, buffer.entry[here].size);
 	    here = (here+1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 	}
     } while (here != end);
