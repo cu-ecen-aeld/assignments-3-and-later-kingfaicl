@@ -9,6 +9,9 @@
  * @date 2019-10-22
  * @copyright Copyright (c) 2019
  *
+ * Clifford Loo
+ * added aesd_llseek(), aesd_adjust_file_offset() & aesd_ioctl()
+ * 2024-09-28
  */
 
 #include <linux/module.h>
@@ -154,21 +157,66 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     return retval;
 }
 
-loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
+loff_t aesd_llseek( struct file *filp, loff_t off, int whence )
 {
     struct aesd_dev *dev = filp->private_data;
     PDEBUG("llseek with offset %lld, whence %d", off, whence);
     size_t size = aesd_circular_buffer_size( &dev->buffer );
     PDEBUG("buffer size = %lu", size);
-    /* use wrapper function fixed_size_llseek(struct file *, loff_t offset, int whence, loff_t size), with locking and logging */
+    /* use wrapper function fixed_size_llseek(), with locking and logging */
     return fixed_size_llseek( filp, off, whence, size );
 }
 
+
+/*
+ * Adjust the file offset (f_pos) parameter of @param filp based on
+ * the location specified by @param write_cmd 9the zero referenced
+ * command to locate) and @param write_cmd_offset 9the zero referenced
+ * offset into the commdn)
+ * @return 0 if successful, negative if error occurred:
+ *	-ERESTARTSYS if mutex could not be obtained
+ *	-EINVAL if write command or write_cmd_offset was out of range
+ */
 static long aesd_adjust_file_offset( struct file *filp,
 				     unsigned int write_cmd,
 				     unsigned int write_cmd_offset )
 {
-    return 0;
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_circular_buffer buffer = dev->buffer;
+    uint8_t here = buffer.out_offs, end = buffer.out_offs;
+    loff_t start_off = 0;
+
+    PDEBUG("adjust file offset %lld to cmd %u offset %u",
+	   write_cmd, write_cmd_offset);
+    /* check for valid cmd offset */
+    if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+	/* out of range */
+	return -EINVAL;
+    }
+    if ((here == end) && !buffer.full) {
+	/* empty buffer */
+	return -EINVAL;
+    }
+    do {
+	if (write_cmd == here) {
+	    /* found */
+	    if (write_cmd_offset >= buffer.entry[here].size) {
+		/* out of range */
+		return -EINVAL;
+	    } else {
+		/* add cmd offset and save as f_pos */
+		filp->f_pos = start_off + write_cmd_offset;
+		return 0;
+	    }
+	} else {
+	    /* add size to start offset */
+	    start_off += buffer.entry[here].size;
+	    /* next */
+	    here = (here+1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+	}
+    } while (here != end);
+    /* not found */
+    return -EINVAL;
 }
 
 long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)

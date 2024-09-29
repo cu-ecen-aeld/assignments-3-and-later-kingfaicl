@@ -1,7 +1,7 @@
 /*
  * aesdsocket.c
  *
- * AELD assignment 6
+ * AELD assignment 9
  * Author: Clifford Loo
  */
 #include <stdio.h>
@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -23,6 +24,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include "queue.h"
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #define MYPORT "9000"  // the port users will be connecting to
 #define BACKLOG 10     // how many pending connections queue will hold
@@ -32,6 +34,7 @@
 #else
 #define OUTPUTFILE "/var/tmp/aesdsocketdata"
 #endif
+#define CMD_KEYWORD "AESDCHAR_IOCSEEKTO"
 #define BUFSIZE 4096
 //#define BUFSIZE 100
 #define PACKET_DELIMITER "\n"
@@ -94,10 +97,12 @@ void thread_joiner( void *ptr )
 
 void *conn_handler( void *thread_param ) 
 {
-    bool pending_data = true;
+    bool pending_data = true, handling_seek = false;
     struct thread_info *args = (struct thread_info *) thread_param;
     ssize_t bytes_read, packet_size, bytes_sent;
     char *read_buf, *line;
+    struct aesd_seekto seekto;
+    unsigned int write_cmd, offset;
 
     syslog( LOG_DEBUG, "Handling connection from %s", args->client_addr );
 
@@ -134,45 +139,34 @@ void *conn_handler( void *thread_param )
 		args->client_addr, read_buf );
 		
 	line = strtok( read_buf, PACKET_DELIMITER );
-	packet_size = strlen( line ) + 1;
-	if (packet_size > BUFSIZE) {
-	    /* write out partial packet if buffer size exceeded */
+	if (!strncmp( line, CMD_KEYWORD, strlen( CMD_KEYWORD ) ) &&
+	    sscanf( line, CMD_KEYWORD ":%u,%u", &write_cmd, &offset ) == 2) {
+	    /* if line begins with the cmd keyword, handle seek command */
 	    syslog( LOG_DEBUG,
-		    "Writing %ld bytes to file \"%s\"",
-		    (long) BUFSIZE, OUTPUTFILE );
-	    if (pthread_mutex_lock( args->mutex ) != 0) {
-		syslog( LOG_ERR, "Error %d (%s) locking mutex for thread %lu",
-			errno, strerror( errno ), args->thread_no );
-	    } else {
-		/* write to output file */
-		if (write( args->out_fd, read_buf, BUFSIZE ) < BUFSIZE) {
-		    syslog( LOG_ERR, "write(partial_pkt) error: %s",
-			    strerror( errno ) );
-		}
-		if (pthread_mutex_unlock( args->mutex ) != 0) {
-		    syslog( LOG_ERR,
-			    "Error %d (%s) unlocking mutex for thread %lu",
-			    errno, strerror( errno ), args->thread_no );
-		}
+		    "Handling ioctl seekto(%u,%u)", write_cmd, offset );
+	    handling_seek = true;
+	    seekto.write_cmd = write_cmd;
+	    seekto.write_cmd_offset = offset;
+	    if (ioctl( args->out_fd, AESDCHAR_IOCSEEKTO, &seekto ) < 0) {
+		syslog( LOG_ERR, "ioctl error: %s", strerror( errno ) );
 	    }
 	} else {
-	    /* write each packet to the output file as a line */
-	    while (line) {
+	    /* handle regular data */
+	    handling_seek = false;
+	    packet_size = strlen( line ) + 1;
+	    if (packet_size > BUFSIZE) {
+		/* write out partial packet if buffer size exceeded */
 		syslog( LOG_DEBUG,
 			"Writing %ld bytes to file \"%s\"",
-			packet_size, OUTPUTFILE );
+			(long) BUFSIZE, OUTPUTFILE );
 		if (pthread_mutex_lock( args->mutex ) != 0) {
-		    syslog( LOG_ERR,
-			    "Error %d (%s) locking mutex for thread %lu",
+		    syslog( LOG_ERR, "Error %d (%s) locking mutex for thread %lu",
 			    errno, strerror( errno ), args->thread_no );
 		} else {
 		    /* write to output file */
-		    if (write( args->out_fd, line, packet_size-1 )
-			!= packet_size-1
-			|| write( args->out_fd, PACKET_DELIMITER, 1 ) != 1) {
-			syslog( LOG_ERR, "write(pkt) error: %s",
+		    if (write( args->out_fd, read_buf, BUFSIZE ) < BUFSIZE) {
+			syslog( LOG_ERR, "write(partial_pkt) error: %s",
 				strerror( errno ) );
-			break; /* to cleanup in case of signal interrupts */
 		    }
 		    if (pthread_mutex_unlock( args->mutex ) != 0) {
 			syslog( LOG_ERR,
@@ -180,13 +174,39 @@ void *conn_handler( void *thread_param )
 				errno, strerror( errno ), args->thread_no );
 		    }
 		}
-		if (packet_size < bytes_read) {
-		    line = strtok( NULL, PACKET_DELIMITER );
-		    packet_size = strlen( line ) + 1;
-		} else {
-		    /* no more packets; ignore remaining bytes
-		       in the buffer */
-		    line = NULL;
+	    } else {
+		/* write each packet to the output file as a line */
+		while (line) {
+		    syslog( LOG_DEBUG,
+			    "Writing %ld bytes to file \"%s\"",
+			    packet_size, OUTPUTFILE );
+		    if (pthread_mutex_lock( args->mutex ) != 0) {
+			syslog( LOG_ERR,
+				"Error %d (%s) locking mutex for thread %lu",
+				errno, strerror( errno ), args->thread_no );
+		    } else {
+			/* write to output file */
+			if (write( args->out_fd, line, packet_size-1 )
+			    != packet_size-1
+			    || write( args->out_fd, PACKET_DELIMITER, 1 ) != 1) {
+			    syslog( LOG_ERR, "write(pkt) error: %s",
+				    strerror( errno ) );
+			    break; /* to cleanup in case of signal interrupts */
+			}
+			if (pthread_mutex_unlock( args->mutex ) != 0) {
+			    syslog( LOG_ERR,
+				    "Error %d (%s) unlocking mutex for thread %lu",
+				    errno, strerror( errno ), args->thread_no );
+			}
+		    }
+		    if (packet_size < bytes_read) {
+			line = strtok( NULL, PACKET_DELIMITER );
+			packet_size = strlen( line ) + 1;
+		    } else {
+			/* no more packets; ignore remaining bytes
+			   in the buffer */
+			line = NULL;
+		    }
 		}
 	    }
 	}
@@ -194,26 +214,13 @@ void *conn_handler( void *thread_param )
 		
     /* done receiving on this client socket,
        start sending data back to client before closing socket */
-#ifndef USE_AESD_CHAR_DEVICE
-    syslog( LOG_DEBUG, "Done receiving, rewinding file \"%s\"",
-	    OUTPUTFILE );
-    if (lseek( args->out_fd, 0L, 0 ) < 0) {
-	syslog( LOG_ERR, "lseek() error: %s", strerror( errno ) );
+    if (!handling_seek) {
+	syslog( LOG_DEBUG, "Done receiving, rewinding file \"%s\"",
+		OUTPUTFILE );
+	if (lseek( args->out_fd, 0L, 0 ) < 0) {
+	    syslog( LOG_ERR, "lseek() error: %s", strerror( errno ) );
+	}
     }
-#else
-    /* seek doesn't work on our /dev/aesdchar; close & re-open instead */
-    syslog( LOG_DEBUG, "Done receiving, closing & re-opening file \"%s\"",
-	    OUTPUTFILE );
-    close( args->out_fd );
-    args->out_fd = open( OUTPUTFILE, O_RDWR|O_TRUNC|O_CREAT, 0644 );
-    if (args->out_fd < 0) {
-	syslog( LOG_ERR, "Error re-opening file \"%s\": %s", OUTPUTFILE,
-		strerror( errno ) );
-	return (void *) 1;
-    }
-    syslog( LOG_DEBUG, "Re-opened file \"%s\" for write (%d)", OUTPUTFILE,
-	    args->out_fd );
-#endif
     for (memset( read_buf, 0, BUFSIZE+1 );
 	 (bytes_read = read( args->out_fd, read_buf, BUFSIZE )) > 0
 	     && !caught_sigint && !caught_sigterm && !caught_sigpipe; ) {
