@@ -160,11 +160,18 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 loff_t aesd_llseek( struct file *filp, loff_t off, int whence )
 {
     struct aesd_dev *dev = filp->private_data;
+    size_t size;
+    loff_t returnval;
+
     PDEBUG("llseek with offset %lld, whence %d", off, whence);
-    size_t size = aesd_circular_buffer_size( &dev->buffer );
-    PDEBUG("buffer size = %lu", size);
     /* use wrapper function fixed_size_llseek(), with locking and logging */
-    return fixed_size_llseek( filp, off, whence, size );
+    if (mutex_lock_interruptible( &dev->lock ))
+	return -ERESTARTSYS;
+    size = aesd_circular_buffer_size( &dev->buffer );
+    PDEBUG("buffer size = %lu", size);
+    returnval = fixed_size_llseek( filp, off, whence, size );
+    mutex_unlock( &dev->lock );
+    return returnval;
 }
 
 
@@ -183,47 +190,55 @@ static long aesd_adjust_file_offset( struct file *filp,
 {
     struct aesd_dev *dev = filp->private_data;
     struct aesd_circular_buffer buffer = dev->buffer;
-    uint8_t here = buffer.out_offs, end = buffer.in_offs;
+    uint8_t here, end;
     loff_t start_off = 0;
+    long returnval = -EINVAL;
 
     PDEBUG("adjust file offset to cmd %u offset %u",
 	   write_cmd, write_cmd_offset);
     /* check for valid cmd offset */
     if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
 	/* out of range */
-	PDEBUG("out of range");
-	return -EINVAL;
+	PDEBUG("cmd out of range");
+	goto out;
     }
+    if (mutex_lock_interruptible( &dev->lock ))
+	return -ERESTARTSYS;
+    here = buffer.out_offs;
+    end = buffer.in_offs;
     if ((here == end) && !buffer.full) {
 	/* empty buffer */
 	PDEBUG("empty buffer");
-	return -EINVAL;
+	goto out;
     }
     do {
 	if (write_cmd == here) {
 	    /* found */
-	    PDEBUG("found entry %u (at offset %u) of size %u",
+	    PDEBUG("found entry %u (at start-offset %u) of size %u",
 		   here, start_off, buffer.entry[here].size);
 	    if (write_cmd_offset >= buffer.entry[here].size) {
 		/* out of range */
-		return -EINVAL;
+		PDEBUG("offset out of range");
+		goto out;
 	    } else {
 		/* add cmd offset and save as f_pos */
 		filp->f_pos = start_off + write_cmd_offset;
-		return 0;
+		returnval = 0;
+		goto out;
 	    }
 	} else {
 	    /* add size to start offset */
 	    start_off += buffer.entry[here].size;
 	    /* next */
-	    PDEBUG("entry %u: adding size %u to offset",
+	    PDEBUG("entry %u: adding size %u to start-offset",
 		   here, buffer.entry[here].size);
 	    here = (here+1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 	}
     } while (here != end);
-    /* not found */
-    PDEBUG("not found");
-    return -EINVAL;
+    PDEBUG("not found");	/* should not occur */
+  out:
+    mutex_unlock( &dev->lock );
+    return returnval;
 }
 
 long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
