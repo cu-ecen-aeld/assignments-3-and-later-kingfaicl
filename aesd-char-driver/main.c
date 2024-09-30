@@ -235,7 +235,7 @@ static long aesd_adjust_file_offset( struct file *filp,
 	    here = (here+1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 	}
     } while (here != end);
-    PDEBUG("not found");	/* should not occur */
+    PDEBUG("not found: cmd not written yet");	/* cmd not written yet */
   out:
     mutex_unlock( &dev->lock );
     return returnval;
